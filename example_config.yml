@@ -1,0 +1,24 @@
+data_config:
+  ds_name: Fluo-N2DL-HeLa_1
+  im_path: '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/01/'
+  seg_path: '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/01_ST/SEG/'
+  gt_path: '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/01_GT/TRA'
+  detections_path: '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/01_ST/coords.csv'
+  out_root: '/home/ddon0001/PhD/experiments/fix_capacity/'
+  time_key: 't'
+  location_keys: ['y', 'x']
+  value_key: 'label'
+  im_shape: [700, 1100]
+
+instance_params:
+  migration_only: False
+  k: 10
+
+tracker_params:
+
+experiment_config:
+  pre_refactor: False
+  appearance_cheat: True
+  div_constraint: True
+  merge_capacity: 2
+  div_cost: INTERCHILD_DISTANCE
