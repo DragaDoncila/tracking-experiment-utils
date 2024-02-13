@@ -14,8 +14,6 @@ instance_params:
   migration_only: False
   k: 10
 
-tracker_params:
-
 experiment_config:
   pre_refactor: False
   appearance_cheat: True
