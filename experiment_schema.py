@@ -2,6 +2,7 @@ from enum import Enum, auto
 import json
 import time
 import pandas as pd
+from importlib.metadata import version
 from pydantic import BaseModel, Field, conlist
 from tracktour import Tracker
 from typing import Optional, Union
@@ -99,7 +100,12 @@ class Traxperiment(BaseModel):
             model.write(os.path.join(out_ds, 'model.lp'))
             model.write(os.path.join(out_ds, 'model.mps'))
         
+        # TODO: formalize/document that the BUILT version is written, so we don't want to
+        # be running experiments in editable mode
         # write tracktour version
+        tracktour_version = version(distribution_name='tracktour')
+        with open(os.path.join(out_ds, 'version.txt'), 'w') as f:
+            f.write(tracktour_version)
 
         # write config (yaml ideally)
         with open(os.path.join(out_ds, 'config.yaml'), 'w') as f:
