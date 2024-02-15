@@ -1,10 +1,15 @@
 from enum import Enum, auto
 import json
+import networkx as nx
 import time
 import pandas as pd
 from importlib.metadata import version
 from pydantic import BaseModel, Field, conlist
-from tracktour import Tracker
+from tracktour import Tracker, load_tiff_frames
+from traccuracy import TrackingGraph
+from traccuracy.loaders import load_ctc_data
+from traccuracy.matchers import CTCMatcher
+from traccuracy.metrics import CTCMetrics
 from typing import Optional, Union
 import os
 
@@ -106,6 +111,28 @@ class Traxperiment(BaseModel):
 
         return tracked
     
+    def evaluate(self):
+        out_ds = self.get_path_to_out_dir()
+        if not os.path.exists(out_ds):
+            raise ValueError(f"Cannot evaluate experiment as no results exist at {out_ds}.\n" + 
+                             "Have you run this experiment?"
+                             )
+        if self.data_config.ground_truth_path is None:
+            raise ValueError(f"Cannot evaluate experiment without ground truth path configured.")
+        if self.data_config.value_key is None:
+            raise ValueError("Cannot evaluate experiment without `value_key` configured.")
+        # load ground truth data using CTC loader
+        gt_graph = load_ctc_data(self.data_config.ground_truth_path)
+        track_graph = self.load_solution_for_metrics()
+
+        matcher = CTCMatcher()
+        matched = matcher.compute_mapping(gt_graph, track_graph)
+        results = CTCMetrics().compute(matched)
+        
+        print(results.results)
+
+
+    
     def write_solved(self, tracked, start):
         # write everything out (including tracktour commit...)
         out_root = self.data_config.out_root_path
@@ -146,14 +173,41 @@ class Traxperiment(BaseModel):
         with open(self.get_path_to_out_file(OUT_FILE.TIMING), 'w') as f:
             json.dump(tracked_dict, f)
     
+    def get_path_to_out_dir(self):
+        return os.path.join(self.data_config.out_root_path, self.data_config.dataset_name)
+
     def get_path_to_out_file(self, file_key: OUT_FILE):
-        out_ds = os.path.join(self.data_config.out_root_path, self.data_config.dataset_name)
+        out_ds = self.get_path_to_out_dir()
         return os.path.join(out_ds, file_key.value)
+    
+    def load_solution_for_metrics(self):
+        out_ds = self.get_path_to_out_dir()
+        if not os.path.exists(out_ds):
+            raise ValueError(f"Cannot evaluate experiment as no results exist at {out_ds}.\n" + 
+                             "Have you run this experiment?"
+                             )
+        # load tracked edges and tracked detections
+        tracked_detections = pd.read_csv(self.get_path_to_out_file(OUT_FILE.TRACKED_DETECTIONS))
+        tracked_edges = pd.read_csv(self.get_path_to_out_file(OUT_FILE.TRACKED_EDGES))
+        seg_ims = load_tiff_frames(self.data_config.segmentation_path)
+        sol_graph = nx.from_pandas_edgelist(tracked_edges, "u", "v", ["flow", "cost"], create_using=nx.DiGraph)
+        det_keys = [self.data_config.frame_key] + self.data_config.location_keys + [self.data_config.value_key] + ['enter_exit_cost', 'div_cost']
+        sol_graph.add_nodes_from(tracked_detections[det_keys].to_dict(orient='index').items())
+
+        track_graph = TrackingGraph(
+            sol_graph, 
+            label_key=self.data_config.value_key, 
+            location_keys=self.data_config.location_keys, 
+            segmentation=seg_ims
+        )
+        return track_graph
+
+
 
 if __name__ == '__main__':
     DATA_ROOT = '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/'
     data_config = TraxData(
-        dataset_name='Fluo-N2DL-HeLa_01',
+        dataset_name='Fluo-N2DL-HeLa_01_no_cheat',
         image_path=os.path.join(DATA_ROOT, '01/'),
         segmentation_path=os.path.join(DATA_ROOT, '01_ST/SEG/'),
         detections_path='/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/01_ST/SEG/detections.csv',
@@ -161,8 +215,10 @@ if __name__ == '__main__':
         frame_shape=[700, 1100]
     )
     experiment = Traxperiment(data_config=data_config)
-    experiment.tracktour_config.appearance_cheat = True
+    # experiment.tracktour_config.appearance_cheat = True
     
     tracked = experiment.run()
-    migration_edges = tracked.tracked_edges
-    tracked_detections = tracked.tracked_detections
+    
+    experiment.data_config.ground_truth_path = '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/01_GT/TRA/'
+    experiment.data_config.value_key = 'label'
+    experiment.evaluate()
