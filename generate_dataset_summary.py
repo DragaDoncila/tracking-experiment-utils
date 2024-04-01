@@ -24,6 +24,7 @@ from tracktour import get_im_centers, load_tiff_frames
 
 IM_DIR_GLOB = "[0-9][0-9]/"
 ST_SEG_SUFFIX = "_ST/SEG/"
+GT_TRA_SUFFIX = "_GT/TRA/"
 
 DET_CSV_NAME = 'detections.csv'
 
@@ -67,6 +68,10 @@ def generate_ctc_summary(root_dir, ds_summary_path):
             in_seg_path = os.path.join(root_dir, ds_name, f'{seq}{ST_SEG_SUFFIX}')
             out_det_path = os.path.join(in_seg_path, DET_CSV_NAME)
 
+            gt_path = os.path.join(root_dir, ds_name, f'{seq}{GT_TRA_SUFFIX}')
+            if not os.path.exists(gt_path):
+                raise ValueError(f"Ground truth path not found: {gt_path}")
+
             name = f'{ds_name}_{seq}'
             ims = load_tiff_frames(seq_pth)
             im_shape = ims[0].shape
@@ -90,7 +95,11 @@ def generate_ctc_summary(root_dir, ds_summary_path):
                     'min_det': min_cells,
                     'max_det': max_cells,
                     'total_det': total_cells,
-                }   
+                    'det_path': out_det_path,
+                    'im_path': seq_pth,
+                    'seg_path': in_seg_path,
+                    'tra_gt_path': gt_path
+                }
             )
     df = pd.DataFrame(rows)
     df.to_csv(ds_summary_path)

@@ -37,6 +37,13 @@ class OUT_FILE(Enum):
     # config
     CONFIG = 'config.yaml'
 
+    # metrics
+    METRICS = 'metrics.json'
+    MATCHING = 'matching.json'
+    MATCHED_SOL = 'matched_solution.graphml'
+    MATCHED_GT = 'matched_gt.graphml'
+
+
 
 class TraxData(BaseModel):
     # these should also be optional, we only need them for metrics
@@ -88,8 +95,10 @@ class Traxperiment(BaseModel):
         # if appearance cheat, change appearance capacity to 2
         if self.tracktour_config.appearance_cheat:
             tracker.APPEARANCE_EDGE_CAPACITY = 2
-        # TODO: configure cost
         # TODO: configure div constraint
+        if not self.tracktour_config.div_constraint:
+            tracker.USE_DIV_CONSTRAINT = False
+        # TODO: configure cost
         
         return tracker
 
@@ -129,8 +138,14 @@ class Traxperiment(BaseModel):
         matched = matcher.compute_mapping(gt_graph, track_graph)
         results = CTCMetrics().compute(matched)
         
+        # TODO: write results and matched graphs
+        with open(os.path.join(out_ds, OUT_FILE.METRICS.value), 'w') as f:
+            json.dump(results.results, f)
+        with open(os.path.join(out_ds, OUT_FILE.MATCHING.value), 'w') as f:
+            json.dump(matched.mapping, f)
+        nx.write_graphml(matched.pred_graph.graph, os.path.join(out_ds, OUT_FILE.MATCHED_SOL.value))
+        nx.write_graphml(matched.gt_graph.graph, os.path.join(out_ds, OUT_FILE.MATCHED_GT.value))
         print(results.results)
-
 
     
     def write_solved(self, tracked, start):
@@ -207,18 +222,18 @@ class Traxperiment(BaseModel):
 if __name__ == '__main__':
     DATA_ROOT = '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/'
     data_config = TraxData(
-        dataset_name='Fluo-N2DL-HeLa_01_no_cheat',
-        image_path=os.path.join(DATA_ROOT, '01/'),
-        segmentation_path=os.path.join(DATA_ROOT, '01_ST/SEG/'),
-        detections_path='/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/01_ST/SEG/detections.csv',
-        out_root_path='/home/ddon0001/PhD/experiments/fix_capacity/',
+        dataset_name='Fluo-N2DL-HeLa_02',
+        image_path=os.path.join(DATA_ROOT, '02/'),
+        segmentation_path=os.path.join(DATA_ROOT, '02_ST/SEG/'),
+        detections_path='/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/02_ST/SEG/detections.csv',
+        out_root_path='/home/ddon0001/PhD/experiments/no_div_constraint/',
         frame_shape=[700, 1100]
     )
     experiment = Traxperiment(data_config=data_config)
-    # experiment.tracktour_config.appearance_cheat = True
+    experiment.tracktour_config.div_constraint = False
     
     tracked = experiment.run()
     
-    experiment.data_config.ground_truth_path = '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/01_GT/TRA/'
+    experiment.data_config.ground_truth_path = '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/02_GT/TRA/'
     experiment.data_config.value_key = 'label'
     experiment.evaluate()
