@@ -36,7 +36,7 @@ def get_immediate_subdirectories(a_dir):
             if os.path.isdir(os.path.join(a_dir, name))]
 
 
-def generate_ctc_summary(root_dir, ds_summary_path):
+def generate_ctc_summary(root_dir, ds_summary_path, use_gt=False):
     """Write summary info of ctc datasets in root_dir to ds_summary_path.
 
     Parameters
@@ -45,6 +45,8 @@ def generate_ctc_summary(root_dir, ds_summary_path):
         path to directory containing CTC datasets
     ds_summary_path : str
         path to write summary csv
+    use_gt : bool, optional
+        whether to just use the ground truth images for detections
 
     Returns
     -------
@@ -63,15 +65,20 @@ def generate_ctc_summary(root_dir, ds_summary_path):
             warnings.warn(f"No image sequences found for dataset {ds_name}. Skipping dataset...", UserWarning)
             continue
         for seq_pth in im_seqs:
-            # load ims get shape and number of frames
             seq = os.path.basename(os.path.dirname(seq_pth)).split('_RES')[0]
-            in_seg_path = os.path.join(root_dir, ds_name, f'{seq}{ST_SEG_SUFFIX}')
-            out_det_path = os.path.join(in_seg_path, DET_CSV_NAME)
-
             gt_path = os.path.join(root_dir, ds_name, f'{seq}{GT_TRA_SUFFIX}')
             if not os.path.exists(gt_path):
                 raise ValueError(f"Ground truth path not found: {gt_path}")
+            if use_gt:
+                in_seg_path = gt_path
+            else:
+                in_seg_path = os.path.join(root_dir, ds_name, f'{seq}{ST_SEG_SUFFIX}')
+                if not os.path.exists(in_seg_path):
+                    warnings.warn(f'No ST segmentation for dataset {ds_name}_{seq}. Skipping...')
+                    continue
+            out_det_path = os.path.join(in_seg_path, DET_CSV_NAME)
 
+            # load ims get shape and number of frames
             name = f'{ds_name}_{seq}'
             ims = load_tiff_frames(seq_pth)
             im_shape = ims[0].shape

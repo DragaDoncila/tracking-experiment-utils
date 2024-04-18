@@ -1,7 +1,7 @@
 import pandas as pd
 
 from experiment_schema import TraxData, TraxInstance, TraxTour, Traxperiment
-
+from utils import get_scale
 
 def ds_summary_to_configs(ds_summary_path, out_root, appearance_cheat=False, div_constraint=True, merge_capacity=2):
     """Convert dataset summary to Traxperiment configs.
@@ -32,6 +32,7 @@ def ds_summary_to_configs(ds_summary_path, out_root, appearance_cheat=False, div
             dataset_name=row['ds_name'],
             detections_path=row['det_path'],
             frame_shape=frame_shape,
+            scale=get_scale(row['ds_name']),
             frame_key='t',
             location_keys=["y", "x"] if len(frame_shape) == 2 else ["z", "y", "x"],
             image_path=row['im_path'],

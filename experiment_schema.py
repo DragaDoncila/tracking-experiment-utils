@@ -46,20 +46,22 @@ class OUT_FILE(Enum):
 
 
 class TraxData(BaseModel):
-    # these should also be optional, we only need them for metrics
+    detections_path: PathLike
+    # TODO: remove? Read fron image if it's present?
+    frame_shape: conlist(int, min_length=2, max_length=3)
+    scale: conlist(float, min_length=2, max_length=3)
+    #TODO: these should also be optional, we only need them for metrics
     # maybe we should have a separate metrics config
     image_path: PathLike
     segmentation_path: PathLike
     out_root_path: PathLike
-    detections_path: PathLike
-    frame_shape: conlist(int, min_length=2, max_length=3)
 
     # Default values available
     dataset_name: str = 'cells'
     location_keys: conlist(str, min_length=2, max_length=3) = ['y', 'x']
     frame_key: str = 't'
 
-    # Optional
+    # Optional (needed for evaluation)
     ground_truth_path: Optional[PathLike] = None
     value_key: Optional[str] = None
 
@@ -85,8 +87,8 @@ class Traxperiment(BaseModel):
 
     def as_tracker(self):
         tracker = Tracker(
-            im_shape=tuple(self.data_config.frame_shape), 
-            k_neighbours=self.instance_config.k
+            im_shape=tuple(self.data_config.frame_shape),
+            scale=self.data_config.scale
         )
         tracker.DEBUG_MODE = True
 
@@ -113,7 +115,8 @@ class Traxperiment(BaseModel):
         tracked = tracker.solve(
             detections=detections,
             frame_key=self.data_config.frame_key,
-            location_keys=self.data_config.location_keys
+            location_keys=self.data_config.location_keys,
+            k_neighbours=self.instance_config.k
         )
 
         self.write_solved(tracked, start)
@@ -220,17 +223,20 @@ class Traxperiment(BaseModel):
 
 
 if __name__ == '__main__':
+    from utils import get_scale
     DATA_ROOT = '/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/'
+    ds_name = 'Fluo-N2DL-HeLa_02'
     data_config = TraxData(
-        dataset_name='Fluo-N2DL-HeLa_02',
+        dataset_name=ds_name,
         image_path=os.path.join(DATA_ROOT, '02/'),
         segmentation_path=os.path.join(DATA_ROOT, '02_ST/SEG/'),
         detections_path='/home/ddon0001/PhD/data/cell_tracking_challenge/ST/Fluo-N2DL-HeLa/02_ST/SEG/detections.csv',
         out_root_path='/home/ddon0001/PhD/experiments/no_div_constraint/',
-        frame_shape=[700, 1100]
+        frame_shape=[700, 1100],
+        scale=get_scale(ds_name),
     )
     experiment = Traxperiment(data_config=data_config)
-    experiment.tracktour_config.div_constraint = False
+    experiment.tracktour_config.div_constraint = True
     
     tracked = experiment.run()
     
