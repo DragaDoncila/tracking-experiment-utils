@@ -76,9 +76,12 @@ class TraxTour(BaseModel):
     # pre_refactor: bool = False
     appearance_cheat: bool = False
     div_constraint: bool = True
+    penalize_flow: bool = False
     # min should be 1 (no merges)
     merge_capacity: int = 2
     div_cost: Cost = Cost.INTERCHILD_DISTANCE
+    #TODO: should only be used in conjunction with penalize flow
+    flow_penalty: float = 0
 
 class Traxperiment(BaseModel):
     data_config: TraxData
@@ -100,13 +103,18 @@ class Traxperiment(BaseModel):
         # TODO: configure div constraint
         if not self.tracktour_config.div_constraint:
             tracker.USE_DIV_CONSTRAINT = False
+        if self.tracktour_config.penalize_flow:
+            tracker.PENALIZE_FLOW = True
+            tracker.FLOW_PENALTY_COEFFICIENT = self.tracktour_config.flow_penalty
         # TODO: configure cost
         
         return tracker
 
-    def run(self):
+    def run(self, write_out=True):
         start = time.time()
         tracker = self.as_tracker()
+        if tracker.PENALIZE_FLOW and tracker.FLOW_PENALTY_COEFFICIENT == 0:
+            raise ValueError("Cannot penalize flow with a coefficient of 0.")
         
         # load detections
         detections = pd.read_csv(self.data_config.detections_path)
@@ -118,44 +126,41 @@ class Traxperiment(BaseModel):
             location_keys=self.data_config.location_keys,
             k_neighbours=self.instance_config.k
         )
-
-        self.write_solved(tracked, start)
+        
+        if write_out:
+            self.write_solved(tracked, start)
 
         return tracked
     
-    def evaluate(self):
-        out_ds = self.get_path_to_out_dir()
-        if not os.path.exists(out_ds):
-            raise ValueError(f"Cannot evaluate experiment as no results exist at {out_ds}.\n" + 
-                             "Have you run this experiment?"
-                             )
+    def evaluate(self, tracked_detections=None, tracked_edges=None, write_out=True):
         if self.data_config.ground_truth_path is None:
             raise ValueError(f"Cannot evaluate experiment without ground truth path configured.")
         if self.data_config.value_key is None:
             raise ValueError("Cannot evaluate experiment without `value_key` configured.")
+        track_graph = self.load_solution_for_metrics(tracked_detections, tracked_edges)
         # load ground truth data using CTC loader
         gt_graph = load_ctc_data(self.data_config.ground_truth_path)
-        track_graph = self.load_solution_for_metrics()
 
         matcher = CTCMatcher()
         matched = matcher.compute_mapping(gt_graph, track_graph)
         results = CTCMetrics().compute(matched)
         
-        # TODO: write results and matched graphs
+        if write_out:
+            self.write_metrics(results.results, matched)
+        return results.results, matched
+
+    def write_metrics(self, results, matched):
+        out_ds = self.get_path_to_out_dir()
         with open(os.path.join(out_ds, OUT_FILE.METRICS.value), 'w') as f:
-            json.dump(results.results, f)
+            json.dump(results, f)
         with open(os.path.join(out_ds, OUT_FILE.MATCHING.value), 'w') as f:
             json.dump(matched.mapping, f)
         nx.write_graphml(matched.pred_graph.graph, os.path.join(out_ds, OUT_FILE.MATCHED_SOL.value))
         nx.write_graphml(matched.gt_graph.graph, os.path.join(out_ds, OUT_FILE.MATCHED_GT.value))
-        print(results.results)
 
-    
     def write_solved(self, tracked, start):
-        # write everything out (including tracktour commit...)
-        out_root = self.data_config.out_root_path
         # TODO: formalize/document that we're writing out and potentially overwriting path
-        out_ds = os.path.join(out_root, self.data_config.dataset_name)
+        out_ds = self.get_path_to_out_dir()
         os.makedirs(out_ds, exist_ok=True)
         
         # write out dataframes
@@ -198,15 +203,17 @@ class Traxperiment(BaseModel):
         out_ds = self.get_path_to_out_dir()
         return os.path.join(out_ds, file_key.value)
     
-    def load_solution_for_metrics(self):
+    def load_solution_for_metrics(self, tracked_detections=None, tracked_edges=None):
         out_ds = self.get_path_to_out_dir()
-        if not os.path.exists(out_ds):
-            raise ValueError(f"Cannot evaluate experiment as no results exist at {out_ds}.\n" + 
+        if not os.path.exists(out_ds) and (tracked_detections is None or tracked_edges is None):
+            raise ValueError(f"Cannot evaluate experiment as detections and edges were not passed,\n" +
+                             "and no results exist at {out_ds}. \n" + 
                              "Have you run this experiment?"
                              )
-        # load tracked edges and tracked detections
-        tracked_detections = pd.read_csv(self.get_path_to_out_file(OUT_FILE.TRACKED_DETECTIONS))
-        tracked_edges = pd.read_csv(self.get_path_to_out_file(OUT_FILE.TRACKED_EDGES))
+        if tracked_detections is None:
+            # load tracked edges and tracked detections
+            tracked_detections = pd.read_csv(self.get_path_to_out_file(OUT_FILE.TRACKED_DETECTIONS))
+            tracked_edges = pd.read_csv(self.get_path_to_out_file(OUT_FILE.TRACKED_EDGES))
         seg_ims = load_tiff_frames(self.data_config.segmentation_path)
         sol_graph = nx.from_pandas_edgelist(tracked_edges, "u", "v", ["flow", "cost"], create_using=nx.DiGraph)
         det_keys = [self.data_config.frame_key] + self.data_config.location_keys + [self.data_config.value_key] + ['enter_exit_cost', 'div_cost']
