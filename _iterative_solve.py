@@ -51,7 +51,7 @@ def iterate_solution(detections_path, initial_solution_path):
     all_edges['sampled'] = 0
     all_edges['oracle_is_correct'] = -1
     solution_edges = all_edges[all_edges.flow > 0]
-    first_sample_ids, oracle_labels = get_first_sample_ids(solution_edges, solution_graph)
+    first_sample_ids, oracle_labels = get_first_sample_ids(solution_edges, solution_graph, gt_graph, sol_to_gt)
 
     update_with_sample(all_edges, first_sample_ids, oracle_labels, gt_graph, sol_to_gt)
     train_and_predict_migrations(all_edges)
@@ -137,7 +137,7 @@ def get_first_sample_ids(
     #             for _, e in chosen_sample.iterrows()
     #         ]
     #     wrong_edges = len(chosen_sample) - np.sum(is_mig_correct)
-    # is_mig_correct = np.asarray(is_mig_correct, dtype=int)
+    is_mig_correct = np.asarray(is_mig_correct, dtype=int)
     return chosen_sample.index, is_mig_correct
 
 def update_with_sample(
