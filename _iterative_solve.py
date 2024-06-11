@@ -17,6 +17,7 @@ Input: path to detections, path to initial solution
 - save everything
 - repeat until everything has been sampled???
 """
+import json
 import networkx as nx
 import os
 import numpy as np
@@ -25,14 +26,20 @@ from scipy.stats import randint
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 import yaml
-from experiment_schema import OUT_FILE, Cost
+from experiment_schema import OUT_FILE, Cost, Traxperiment
 
 def iterate_solution(detections_path, initial_solution_path):
     det_df = pd.read_csv(detections_path)
 
-    all_vertices = pd.read_csv(join_pth(initial_solution_path, OUT_FILE.ALL_VERTICES))
+    all_vertices = pd.read_csv(join_pth(initial_solution_path, OUT_FILE.ALL_VERTICES), index_col=0)
     all_edges = pd.read_csv(join_pth(initial_solution_path, OUT_FILE.ALL_EDGES))
     solution_graph = nx.read_graphml(join_pth(initial_solution_path, OUT_FILE.MATCHED_SOL), node_type=int)
+    gt_graph = nx.read_graphml(join_pth(initial_solution_path, OUT_FILE.MATCHED_GT))
+
+    with open(join_pth(initial_solution_path, OUT_FILE.MATCHING), 'r') as f:
+        node_match = json.load(f)
+    gt_to_sol = {item[0]: item[1] for item in node_match}
+    sol_to_gt = {item[1]: item[0] for item in node_match}
 
     with open(join_pth(initial_solution_path, OUT_FILE.CONFIG), 'r') as f:
         config = yaml.load(f, Loader=get_loader())
@@ -46,9 +53,22 @@ def iterate_solution(detections_path, initial_solution_path):
     solution_edges = all_edges[all_edges.flow > 0]
     first_sample_ids, oracle_labels = get_first_sample_ids(solution_edges, solution_graph)
 
-    update_with_sample(all_edges, first_sample_ids, oracle_labels)
+    update_with_sample(all_edges, first_sample_ids, oracle_labels, gt_graph, sol_to_gt)
     train_and_predict_migrations(all_edges)
     assign_new_costs(all_edges)
+
+    trkr = Traxperiment(**config).as_tracker()
+
+
+    tracked = trkr.solve_from_existing_edges(
+        all_vertices=all_vertices,
+        all_edges=all_edges,
+        frame_key=config['data_config']['frame_key'],
+        location_keys=config['data_config']['location_keys'],
+        value_key=config['data_config']['value_key'],
+        k_neighbours=config['instance_config']['k']
+    )
+
 
 
 def load_cost_constructor(loader: yaml.SafeLoader, node: yaml.nodes.MappingNode) -> Cost:
@@ -72,15 +92,20 @@ def assign_migration_features(
     migration_edges = all_edges[(all_edges.u >= 0) & (all_edges.v >= 0)]
     for name, group in migration_edges.groupby('u'):
         sorted_group = group.sort_values(by='distance').reset_index()
-        for row in group.itertuples():
+        for i, row in enumerate(sorted_group.itertuples()):
             u, v = row.u, row.v
             u_area = det_df.loc[u, 'area']
             v_area = det_df.loc[v, 'area']
-            all_edges.loc[row.Index, 'chosen_neighbour_area_prop'] = v_area / u_area
-            neighbour_rank = sorted_group[sorted_group['v'] == v].index[0]
-            all_edges.loc[row.Index, 'chosen_neighbour_rank'] = neighbour_rank
+            all_edges.loc[row.index, 'chosen_neighbour_area_prop'] = v_area / u_area
+            all_edges.loc[row.index, 'chosen_neighbour_rank'] = i
 
-def get_first_sample_ids(solution_edges, solution_graph, n_init=10):
+def get_first_sample_ids(
+        solution_edges,
+        solution_graph,
+        gt_graph,
+        sol_to_gt_matching,
+        n_init=10,
+    ):
     migration_rows = solution_edges[solution_edges.chosen_neighbour_rank >= 0]
     # we sample using the chosen_neighbour_distance as a weight
     # makes it more likely we get an incorrect edge
@@ -93,34 +118,52 @@ def get_first_sample_ids(solution_edges, solution_graph, n_init=10):
         for _, e in chosen_sample.iterrows()
         ]
     wrong_edges = len(chosen_sample) - np.sum(is_mig_correct)
-    #TODO: could infinite, need better here
-    while not wrong_edges:
-        print("Resampling!")
-        chosen_sample = migration_rows.sample(n=n_init, weights='distance')
-        is_mig_correct = [
-                not (solution_graph.edges[e['u'], e['v']]['EdgeFlag.FALSE_POS'])
-                # NOTE: we only exclude FALSE POSITIVE EDGES here
-                # wrong semantic edges ARE PART OF THE SOLUTION so we don't want to remove them...
-                # solution_graph.edges[e['u'], e['v']]['EdgeFlag.WRONG_SEMANTIC'])
-                for _, e in chosen_sample.iterrows()
-            ]
-        wrong_edges = len(chosen_sample) - np.sum(is_mig_correct)
-    is_mig_correct = np.asarray(is_mig_correct, dtype=int)
+    if not wrong_edges:
+        # are all cells dividing
+        gt_sources = [sol_to_gt_matching[u] for u in chosen_sample.u if u in sol_to_gt_matching]
+        if all(gt_graph.out_degree(u) > 1 for u in gt_sources):
+            # all cells are dividing and all edges are correct. Bad sample!
+            raise ValueError("Couldn't sample any guaranteed incorrect edges", chosen_sample)
+
+    # #TODO: could infinite, need better here
+    # while not wrong_edges:
+    #     print("Resampling!")
+    #     chosen_sample = migration_rows.sample(n=n_init, weights='distance')
+    #     is_mig_correct = [
+    #             not (solution_graph.edges[e['u'], e['v']]['EdgeFlag.FALSE_POS'])
+    #             # NOTE: we only exclude FALSE POSITIVE EDGES here
+    #             # wrong semantic edges ARE PART OF THE SOLUTION so we don't want to remove them...
+    #             # solution_graph.edges[e['u'], e['v']]['EdgeFlag.WRONG_SEMANTIC'])
+    #             for _, e in chosen_sample.iterrows()
+    #         ]
+    #     wrong_edges = len(chosen_sample) - np.sum(is_mig_correct)
+    # is_mig_correct = np.asarray(is_mig_correct, dtype=int)
     return chosen_sample.index, is_mig_correct
 
-def update_with_sample(all_edges, sample_ids, oracle_labels):
+def update_with_sample(
+        all_edges,
+        sample_ids,
+        oracle_labels,
+        gt_graph,
+        sol_to_gt_matching,
+    ):
     all_edges.loc[sample_ids, 'sampled'] = 1
     all_edges.loc[sample_ids, 'oracle_is_correct'] = oracle_labels
-    # if the edge is correct, we need to update all other edges leaving u to be incorrect
-    # and sampled
+    # NOTE: if the edge is correct, we check whether source node is dividing (in GT!!)
+    # if it's not, we mark all other migrations from that node as incorrect
     for idx, is_correct in zip(sample_ids, oracle_labels):
         if is_correct:
             u, v = all_edges.loc[idx, ['u', 'v']]
-            other_mig_from_u = all_edges[(all_edges.u == u) & (all_edges.v >= 0) & (all_edges.v != v)]
-            all_edges.loc[other_mig_from_u.index, 'sampled'] = 1 
-            all_edges.loc[other_mig_from_u.index, 'oracle_is_correct'] = 0
+            if u in sol_to_gt_matching:
+                u_gt = sol_to_gt_matching[u]
+                # gt source is not dividing, current edge is only correct edge
+                if gt_graph.out_degree(u_gt) <= 1:
+                    # mark all other migrations incorrect
+                    other_mig_from_u = all_edges[(all_edges.u == u) & (all_edges.v >= 0) & (all_edges.v != v)]
+                    all_edges.loc[other_mig_from_u.index, 'sampled'] = 1
+                    all_edges.loc[other_mig_from_u.index, 'oracle_is_correct'] = 0
 
-def train_and_predict_migrations(all_edges):
+def train_and_predict_migrations(all_edges, n_estimators=250, max_depth=10):
     all_edges['mig_predict_proba'] = -1
     columns_of_interest = [
         'distance',
@@ -132,30 +175,13 @@ def train_and_predict_migrations(all_edges):
 
     X = all_sampled.drop(columns=['oracle_is_correct'])
     y = all_sampled.oracle_is_correct
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 
-    count_true = y_train.sum()
-    count_false = len(y_train) - count_true
-    rf = RandomForestClassifier()
-    param_dist = {
-        # number of trees
-        'n_estimators': randint(2,200),
-        # depth of the tree
-        'max_depth': randint(1,20)
-    }
-    # searching for best hyperparameters using randomized search
-    search = RandomizedSearchCV(
-        rf,
-        param_distributions = param_dist,
-        n_iter = 5,
-        cv = 5 if (count_true >= 5 and count_false >= 5) else 2,
-    )
-    search.fit(X_train, y_train)
-    best_model = search.best_estimator_
+    rf = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth)
+    rf.fit(X, y)
 
     all_migration_edges = all_edges[(all_edges.u >= 0) & (all_edges.v >= 0)][columns_of_interest].drop(columns=['oracle_is_correct'])
-    mig_predictions = best_model.predict_proba(all_migration_edges)
-    true_class = list(best_model.classes_).index(1)
+    mig_predictions = rf.predict_proba(all_migration_edges)
+    true_class = list(rf.classes_).index(1)
     prob_correct = mig_predictions[:, true_class]
     all_edges.loc[all_migration_edges.index, 'mig_predict_proba'] = prob_correct
 
