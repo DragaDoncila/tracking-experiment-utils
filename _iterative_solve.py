@@ -44,6 +44,12 @@ def iterate_solution(detections_path, initial_solution_path, out_root_path):
     all_edges['sampled_it'] = -1
     it = 1
     sampling_strategy = generate_sampling_strategy(solution_graph.number_of_edges())
+
+    os.makedirs(out_root_path, exist_ok=True)
+    with open(os.path.join(out_root_path, 'sampling_strategy.txt'), 'w') as f:
+        for n_sampled in sampling_strategy:
+            f.write(f'{n_sampled}\n')
+
     new_sample_ids, oracle_labels = get_first_sample_ids(all_edges, solution_graph, gt_graph, sol_to_gt, n_init=sampling_strategy[0])
     for n_samples in sampling_strategy[1:]:
         ds_name = config['data_config']['dataset_name']
@@ -129,9 +135,33 @@ def get_migration_correct_labels(chosen_sample, solution_graph):
 def generate_sampling_strategy(n):
     sample_sizes = []
 
+    # first 10 iterations are 30 edges each - ~10 min annotation effort
+    n_30s = min(10, n // 30)
+    sample_sizes.extend([30 for _ in range(n_30s)])
+    n -= n_30s * 30
+    
+    # next 10 iterations are 180 edges each - ~1 hour annotation effort
+    n_180s = min(10, n // 180)
+    sample_sizes.extend([180 for _ in range(n_180s)])
+    n -= n_180s * 180
+
+    # finally, we evenly divide what's left into 10 iterations?
+    final_sample_size = max(180, n // 10)
+    final_n_samples = n // final_sample_size
+    sample_sizes.extend([final_sample_size for _ in range(final_n_samples)])
+    n -= final_n_samples * final_sample_size
+
+    # remainder
+    if n > 0:
+        sample_sizes[-1] += n
+    return sample_sizes
+
+def generate_sampling_strategy_old(n):
+    sample_sizes = []
+
     # First 1% of n with 30 equispaced samples
     first_1_percent = int(0.01 * n)
-    first_sample_size = first_1_percent / 30
+    first_sample_size = int(first_1_percent / 30)
     if first_sample_size < 10:
         first_sample_size = 10
         sample_sizes.extend([10 for _ in range(first_sample_size, first_1_percent, 10)])
@@ -190,7 +220,11 @@ def get_new_sample_ids(
     if to_sample == 0:
         return [], []
     
+    # lift sample weights a little, we don't want 0 weights
     unsampled_edges['sample_weight'] = 1 - unsampled_edges.mig_predict_proba
+    unsampled_edges.loc[(unsampled_edges.sample_weight == 0).index, 'sample_weight'] += 0.0001
+
+    # if there's more 0 weights than to_sample, 
     chosen_sample = unsampled_edges.sample(n=to_sample, weights='sample_weight')
     is_mig_correct = get_migration_correct_labels(chosen_sample, solution_graph)
     is_mig_correct = np.asarray(is_mig_correct, dtype=int)
@@ -248,10 +282,15 @@ def train_and_predict_migrations(all_edges, n_estimators=250, max_depth=10):
     prob_correct = mig_predictions[:, true_class]
     all_edges.loc[all_migration_edges.index, 'mig_predict_proba'] = prob_correct
 
-def prob_weighted_cost(row):
+def prob_weighted_cost_old(row):
     return row.distance * (1 - row.mig_predict_proba)
+
+def scaled_prob_weighted_cost(row, k=0.9):
+    """Designed to scale probabilities closer to 0.5 as model tends to be too confident."""
+    p_scaled = row.mig_predict_proba * k + (1 - k) * 0.5
+    return row.distance * (1 - p_scaled)
 
 def assign_new_costs(all_edges):
     all_edges['learned_migration_cost'] = -1
     edges_with_pred = all_edges[all_edges.mig_predict_proba >= 0]
-    all_edges.loc[edges_with_pred.index, 'learned_migration_cost'] = edges_with_pred.apply(prob_weighted_cost, axis=1)
+    all_edges.loc[edges_with_pred.index, 'learned_migration_cost'] = edges_with_pred.apply(scaled_prob_weighted_cost, axis=1)
