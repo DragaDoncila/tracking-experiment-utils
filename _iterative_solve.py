@@ -153,7 +153,10 @@ def generate_sampling_strategy(n):
 
     # remainder
     if n > 0:
-        sample_sizes[-1] += n
+        if len(sample_sizes):
+            sample_sizes[-1] += n
+        else:
+            sample_sizes.append(n)
     return sample_sizes
 
 def generate_sampling_strategy_old(n):
@@ -214,17 +217,16 @@ def get_new_sample_ids(
     migration_edges = solution_edges[solution_edges.chosen_neighbour_rank >= 0]
     # unsampled: sampled flag 0, used in the solution, non-virtual adjacent
     unsampled_edges = migration_edges[(migration_edges.sampled == 0)]
-    assert all(unsampled_edges.mig_predict_proba != -1), 'Some edges have no migration prediction!'
-    # sample using the migration prediction probability as weight
+    assert all(unsampled_edges.scaled_mig_predict_proba != -1), 'Some edges have no migration prediction!'
     to_sample = n_samples if len(unsampled_edges) >= n_samples else len(unsampled_edges)
     if to_sample == 0:
         return [], []
     
-    # lift sample weights a little, we don't want 0 weights
-    unsampled_edges['sample_weight'] = 1 - unsampled_edges.mig_predict_proba
-    unsampled_edges.loc[(unsampled_edges.sample_weight == 0).index, 'sample_weight'] += 0.0001
+    # sample using the scaled migration prediction probability as weight
+    unsampled_edges['sample_weight'] = 1 - unsampled_edges.scaled_mig_predict_proba
+    # scaled mig predict, should be no zero weights
+    assert len(unsampled_edges[unsampled_edges.sample_weight == 0]) == 0, 'Some unsampled edges have zero weight!'
 
-    # if there's more 0 weights than to_sample, 
     chosen_sample = unsampled_edges.sample(n=to_sample, weights='sample_weight')
     is_mig_correct = get_migration_correct_labels(chosen_sample, solution_graph)
     is_mig_correct = np.asarray(is_mig_correct, dtype=int)
@@ -260,8 +262,25 @@ def update_with_sample(
                     if not were_flowing.empty: 
                         all_edges.loc[were_flowing.index, 'manually_repaired'] = 1
 
-def train_and_predict_migrations(all_edges, n_estimators=250, max_depth=10):
+def train_and_predict_migrations(all_edges, n_estimators=250, max_depth=10, k=0.9):
+    """Train random forest classifier on sampled migrations and predict on all edges.
+
+    Scale model's prediction probability using k as a measure of confidence. k=0 will
+    make all probabilities 0.5, while k=1 will keep the original model probability.
+
+    Parameters
+    ----------
+    all_edges : pd.DataFrame
+        dataframe of all edges
+    n_estimators : int, optional
+        number of trees, by default 250
+    max_depth : int, optional
+        max depth of trees, by default 10
+    k : float, optional
+        model probability scale factor, by default 0.9
+    """
     all_edges['mig_predict_proba'] = -1
+    all_edges['scaled_mig_predict_proba'] = -1
     columns_of_interest = [
         'distance',
         'chosen_neighbour_area_prop',
@@ -281,16 +300,16 @@ def train_and_predict_migrations(all_edges, n_estimators=250, max_depth=10):
     true_class = list(rf.classes_).index(1)
     prob_correct = mig_predictions[:, true_class]
     all_edges.loc[all_migration_edges.index, 'mig_predict_proba'] = prob_correct
+    all_edges.loc[all_migration_edges.index, 'scaled_mig_predict_proba'] = prob_correct * k + (1 - k) * 0.5
 
 def prob_weighted_cost_old(row):
     return row.distance * (1 - row.mig_predict_proba)
 
-def scaled_prob_weighted_cost(row, k=0.9):
-    """Designed to scale probabilities closer to 0.5 as model tends to be too confident."""
-    p_scaled = row.mig_predict_proba * k + (1 - k) * 0.5
-    return row.distance * (1 - p_scaled)
+def scaled_prob_weighted_cost(row):
+    """Designed to use scaled probabilities closer to 0.5 as model tends to be too confident."""
+    return row.distance * (1 - row.scaled_mig_predict_proba)
 
 def assign_new_costs(all_edges):
     all_edges['learned_migration_cost'] = -1
-    edges_with_pred = all_edges[all_edges.mig_predict_proba >= 0]
+    edges_with_pred = all_edges[all_edges.scaled_mig_predict_proba >= 0]
     all_edges.loc[edges_with_pred.index, 'learned_migration_cost'] = edges_with_pred.apply(scaled_prob_weighted_cost, axis=1)
