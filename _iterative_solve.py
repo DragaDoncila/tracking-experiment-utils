@@ -77,7 +77,7 @@ def iterate_solution(detections_path, initial_solution_path, out_root_path):
         
         # need to reload/reassign all new stuff here
         all_vertices, all_edges, solution_graph, gt_graph, gt_to_sol, sol_to_gt = load_sol_files(os.path.join(out_root_path, config['data_config']['dataset_name']))
-        new_sample_ids, oracle_labels = get_new_sample_ids(all_edges, solution_graph, n_samples)
+        new_sample_ids, oracle_labels = get_new_sample_ids_random(all_edges, solution_graph, n_samples)
         it += 1
 
 def load_sol_files(root_pth):
@@ -208,21 +208,20 @@ def get_first_sample_ids(
     is_mig_correct = np.asarray(is_mig_correct, dtype=int)
     return chosen_sample.index, is_mig_correct
 
-def get_new_sample_ids(
+def get_new_sample_ids_proba_weighted(
         all_edges,
         solution_graph,
         n_samples=10
     ):
-    solution_edges = all_edges[all_edges.flow > 0]
-    migration_edges = solution_edges[solution_edges.chosen_neighbour_rank >= 0]
-    # unsampled: sampled flag 0, used in the solution, non-virtual adjacent
-    unsampled_edges = migration_edges[(migration_edges.sampled == 0)]
+
+    unsampled_edges = get_unsampled_edges(all_edges)
     assert all(unsampled_edges.scaled_mig_predict_proba != -1), 'Some edges have no migration prediction!'
     to_sample = n_samples if len(unsampled_edges) >= n_samples else len(unsampled_edges)
     if to_sample == 0:
         return [], []
     
     # sample using the scaled migration prediction probability as weight
+    # the more likely it is an edge is incorrect, the less likely we are to sample it
     unsampled_edges['sample_weight'] = 1 - unsampled_edges.scaled_mig_predict_proba
     # scaled mig predict, should be no zero weights
     assert len(unsampled_edges[unsampled_edges.sample_weight == 0]) == 0, 'Some unsampled edges have zero weight!'
@@ -231,6 +230,29 @@ def get_new_sample_ids(
     is_mig_correct = get_migration_correct_labels(chosen_sample, solution_graph)
     is_mig_correct = np.asarray(is_mig_correct, dtype=int)
     return chosen_sample.index, is_mig_correct
+
+def get_new_sample_ids_random(
+        all_edges,
+        solution_graph,
+        n_samples=10
+    ):
+    unsampled_edges = get_unsampled_edges(all_edges)
+    to_sample = n_samples if len(unsampled_edges) >= n_samples else len(unsampled_edges)
+    if to_sample == 0:
+        return [], []
+    
+    # no weighted sampling, totally random
+    chosen_sample = unsampled_edges.sample(n=to_sample)
+    is_mig_correct = get_migration_correct_labels(chosen_sample, solution_graph)
+    is_mig_correct = np.asarray(is_mig_correct, dtype=int)
+    return chosen_sample.index, is_mig_correct
+
+def get_unsampled_edges(all_edges):
+    # unsampled: sampled flag 0, used in the solution, non-virtual adjacent
+    solution_edges = all_edges[all_edges.flow > 0]
+    migration_edges = solution_edges[solution_edges.chosen_neighbour_rank >= 0]
+    unsampled_edges = migration_edges[(migration_edges.sampled == 0)]
+    return unsampled_edges
 
 def update_with_sample(
         all_edges,
