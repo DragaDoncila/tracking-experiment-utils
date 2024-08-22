@@ -27,6 +27,7 @@ class OUT_FILE(Enum):
     # models
     MODEL_LP = 'model.lp'
     MODEL_MPS = 'model.mps'
+    MODEL_SOL = 'model.sol'
 
     # tracktour version
     TRACKTOUR_VERSION = 'version.txt'
@@ -77,11 +78,13 @@ class TraxTour(BaseModel):
     appearance_cheat: bool = False
     div_constraint: bool = True
     penalize_flow: bool = False
-    # min should be 1 (no merges)
+    allow_merges: bool = True
+    # min should be 1 (no continued merges)
     merge_capacity: int = 2
     div_cost: Cost = Cost.INTERCHILD_DISTANCE
     #TODO: should only be used in conjunction with penalize flow
     flow_penalty: float = 0
+
 
 class Traxperiment(BaseModel):
     data_config: TraxData
@@ -106,11 +109,13 @@ class Traxperiment(BaseModel):
         if self.tracktour_config.penalize_flow:
             tracker.PENALIZE_FLOW = True
             tracker.FLOW_PENALTY_COEFFICIENT = self.tracktour_config.flow_penalty
+        if not self.tracktour_config.allow_merges:
+            tracker.ALLOW_MERGES = False
         # TODO: configure cost
         
         return tracker
 
-    def run(self, write_out=True):
+    def run(self, write_out=True, compute_additional_features=False):
         start = time.time()
         tracker = self.as_tracker()
         if tracker.PENALIZE_FLOW and tracker.FLOW_PENALTY_COEFFICIENT == 0:
@@ -126,6 +131,15 @@ class Traxperiment(BaseModel):
             location_keys=self.data_config.location_keys,
             k_neighbours=self.instance_config.k
         )
+
+        if compute_additional_features:
+            if not tracker.DEBUG_MODE:
+                raise ValueError("Cannot compute additional features without DEBUG_MODE enabled.")
+            # compute migration features and store in `all_edges`
+            # compute sensitivity information from model and store in `all_edges`
+            assign_migration_features(tracked.all_edges, detections)
+            assign_sensitivity_features(tracked.all_edges, tracked.model)
+
         
         if write_out:
             self.write_solved(tracked, start)
@@ -176,6 +190,7 @@ class Traxperiment(BaseModel):
         if (model := tracked_dict.pop('model')) is not None:
             model.write(self.get_path_to_out_file(OUT_FILE.MODEL_LP))
             model.write(self.get_path_to_out_file(OUT_FILE.MODEL_MPS))
+            model.write(self.get_path_to_out_file(OUT_FILE.MODEL_SOL))
         
         # TODO: formalize/document that the BUILT version is written, so we don't want to
         # be running experiments in editable mode
@@ -227,7 +242,51 @@ class Traxperiment(BaseModel):
         )
         return track_graph
 
+def assign_migration_features(
+        all_edges,
+        det_df    
+    ): 
+    all_edges['chosen_neighbour_rank'] = -1
+    all_edges['chosen_neighbour_area_prop'] = -1.0
 
+    migration_edges = all_edges[(all_edges.u >= 0) & (all_edges.v >= 0)]
+    for name, group in migration_edges.groupby('u'):
+        sorted_group = group.sort_values(by='distance').reset_index()
+        for i, row in enumerate(sorted_group.itertuples()):
+            u, v = row.u, row.v
+            u_area = det_df.loc[u, 'area']
+            v_area = det_df.loc[v, 'area']
+            all_edges.loc[row.index, 'chosen_neighbour_area_prop'] = v_area / u_area
+            all_edges.loc[row.index, 'chosen_neighbour_rank'] = i
+    return ['distance', 'chosen_neighbour_area_prop', 'chosen_neighbour_rank']
+
+def assign_sensitivity_features(
+        all_edges,
+        model
+    ):
+    sa_obj_low = [None for _ in range(len(all_edges))]
+    sa_obj_up = [None for _ in range(len(all_edges))]
+    sens_diffs = [None for _ in range(len(all_edges))]
+    s = Tracker.VIRTUAL_LABEL_TO_INDEX['s']
+    a = Tracker.VIRTUAL_LABEL_TO_INDEX['a']
+    d = Tracker.VIRTUAL_LABEL_TO_INDEX['d']
+    t = Tracker.VIRTUAL_LABEL_TO_INDEX['t']
+    for i, var in enumerate(model.getVars()):
+        name = var.varName
+        edg_idx, src, dst = eval(name.lstrip('flow'))
+        edg_row = all_edges.loc[edg_idx]
+        if var.X == 0:
+            sens_diff = abs(edg_row['cost'] - var.SAObjLow)
+        else:
+            sens_diff = abs(edg_row['cost'] - var.SAObjUp)
+        sa_obj_low[edg_idx] = var.SAObjLow
+        sa_obj_up[edg_idx] = var.SAObjUp
+        sens_diffs[edg_idx] = sens_diff
+
+    all_edges['sa_obj_low'] = sa_obj_low
+    all_edges['sa_obj_up'] = sa_obj_up
+    all_edges['sensitivity_diff'] = sens_diffs
+    
 
 if __name__ == '__main__':
     from utils import get_scale

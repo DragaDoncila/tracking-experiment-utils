@@ -17,6 +17,7 @@ Input: path to detections, path to initial solution
 - save everything
 - repeat until everything has been sampled???
 """
+import gurobipy
 import json
 import networkx as nx
 import os
@@ -26,7 +27,12 @@ from scipy.stats import randint
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import RandomizedSearchCV, train_test_split
 import yaml
-from experiment_schema import OUT_FILE, Cost, Traxperiment
+from experiment_schema import OUT_FILE, Cost, Traxperiment, assign_migration_features, assign_sensitivity_features
+
+
+# TODO: before re-run
+# edit to save which edges were presented and which were deduced
+# edit to save out edges, det and model for infeasible models
 
 def iterate_solution(detections_path, initial_solution_path, out_root_path):
     det_df = pd.read_csv(detections_path)
@@ -38,7 +44,17 @@ def iterate_solution(detections_path, initial_solution_path, out_root_path):
     # assign features to all migration edges in all_edges and on solution graph
     # NOTE: we assign to all migration-like edges in solution, regardless of 
     # whether node is dividing
-    assign_migration_features(all_edges, det_df)
+    current_cols = all_edges.columns
+    mig_features = ['distance', 'chosen_neighbour_area_prop', 'chosen_neighbour_rank']
+    sens_features = ['sa_obj_low', 'sa_obj_up', 'sensitivity_diff']
+    if any(col not in current_cols for col in mig_features):
+        assign_migration_features(all_edges, det_df)
+    if any(col not in current_cols for col in sens_features):
+        model = gurobipy.read(join_pth(initial_solution_path, OUT_FILE.MODEL_LP))
+        model.read(join_pth(initial_solution_path, OUT_FILE.MODEL_SOL))
+        model.optimize()
+        assign_sensitivity_features(all_edges, model)
+        
     # assign new out root to config, give it a new ds name
     config['data_config']['out_root_path'] = out_root_path
     all_edges['sampled_it'] = -1
@@ -50,7 +66,9 @@ def iterate_solution(detections_path, initial_solution_path, out_root_path):
         for n_sampled in sampling_strategy:
             f.write(f'{n_sampled}\n')
 
-    new_sample_ids, oracle_labels = get_first_sample_ids(all_edges, solution_graph, gt_graph, sol_to_gt, n_init=sampling_strategy[0])
+    # new_sample_ids, oracle_labels = get_first_sample_ids(all_edges, solution_graph, gt_graph, sol_to_gt, n_init=sampling_strategy[0])
+    # new_sample_ids, oracle_labels = get_first_sample_ids_curated(all_edges, solution_graph, gt_graph, sol_to_gt, n_init=sampling_strategy[0])
+    new_sample_ids, oracle_labels = get_first_sample_ids_sensitivity_analysis(all_edges, solution_graph, n_init=sampling_strategy[0])
     for n_samples in sampling_strategy[1:]:
         ds_name = config['data_config']['dataset_name']
         if it > 1:
@@ -72,6 +90,9 @@ def iterate_solution(detections_path, initial_solution_path, out_root_path):
             value_key=config['data_config']['value_key'],
             k_neighbours=config['instance_config']['k']
         )
+        if tracked is None:
+            print(f"Tracker failed to solve, exiting at iteration {it}!")
+            break
         trk_experiment.write_solved(tracked, start=0)
         results, matched = trk_experiment.evaluate(tracked.tracked_detections, tracked.tracked_edges, write_out=True)
         
@@ -105,30 +126,13 @@ def get_loader():
 def join_pth(root: str, suffix: OUT_FILE) -> str:
     return os.path.join(root, suffix.value)
 
-def assign_migration_features(
-        all_edges,
-        det_df    
-    ): 
-    all_edges['chosen_neighbour_rank'] = -1
-    all_edges['chosen_neighbour_area_prop'] = -1
-
-    migration_edges = all_edges[(all_edges.u >= 0) & (all_edges.v >= 0)]
-    for name, group in migration_edges.groupby('u'):
-        sorted_group = group.sort_values(by='distance').reset_index()
-        for i, row in enumerate(sorted_group.itertuples()):
-            u, v = row.u, row.v
-            u_area = det_df.loc[u, 'area']
-            v_area = det_df.loc[v, 'area']
-            all_edges.loc[row.index, 'chosen_neighbour_area_prop'] = v_area / u_area
-            all_edges.loc[row.index, 'chosen_neighbour_rank'] = i
-
 def get_migration_correct_labels(chosen_sample, solution_graph):
     is_correct = [
     # NOTE: we only exclude FALSE POSITIVE EDGES here
     # wrong semantic edges ARE PART OF THE SOLUTION so we don't want to remove them...
-    not (solution_graph.edges[e['u'], e['v']]['EdgeFlag.FALSE_POS'])
+    not (solution_graph.edges[e.u, e.v]['EdgeFlag.FALSE_POS'])
     # solution_graph.edges[e['u'], e['v']]['EdgeFlag.WRONG_SEMANTIC'])
-    for _, e in chosen_sample.iterrows()
+    for e in chosen_sample.itertuples()
     ]
     return is_correct
 
@@ -208,6 +212,49 @@ def get_first_sample_ids(
     is_mig_correct = np.asarray(is_mig_correct, dtype=int)
     return chosen_sample.index, is_mig_correct
 
+def get_first_sample_ids_sensitivity_analysis(all_edges, solution_graph, n_init=10):
+    return
+        
+
+
+def get_first_sample_ids_curated(
+        all_edges,
+        solution_graph,
+        gt_graph,
+        sol_to_gt_matching,
+        n_init=10,
+    ):
+    all_edges['sampled'] = 0
+    all_edges['oracle_is_correct'] = -1
+    all_edges['manually_repaired'] = -1
+    solution_edges = all_edges[all_edges.flow > 0]
+    migration_rows = solution_edges[solution_edges.chosen_neighbour_rank >= 0]
+    # get one row of each used neighbour rank
+    used_neighbours = migration_rows.chosen_neighbour_rank.unique()
+    sample_ids = []
+    for rank in used_neighbours:
+        rank_rows = migration_rows[migration_rows.chosen_neighbour_rank == rank]
+        random_of_rank = rank_rows.sample(n=1)
+        sample_ids.append(random_of_rank.index[0])
+    remaining_to_sample = n_init - len(sample_ids)
+
+    # we sample remainder using the chosen_neighbour_distance as a weight
+    # makes it more likely we get an incorrect edge
+    rest_of_sample = migration_rows.sample(n=remaining_to_sample, weights='distance').index
+    all_sampled_ids = sample_ids + list(rest_of_sample)
+    all_sampled = migration_rows.loc[all_sampled_ids]
+    is_mig_correct = get_migration_correct_labels(all_sampled, solution_graph)
+    wrong_edges = len(all_sampled) - np.sum(is_mig_correct)
+    if not wrong_edges:
+        # are all cells dividing
+        gt_sources = [sol_to_gt_matching[u] for u in all_sampled.u if u in sol_to_gt_matching]
+        if all(gt_graph.out_degree(u) > 1 for u in gt_sources):
+            # all cells are dividing and all edges are correct. Bad sample!
+            raise ValueError("Couldn't sample any guaranteed incorrect edges", all_sampled)
+
+    is_mig_correct = np.asarray(is_mig_correct, dtype=int)
+    return all_sampled_ids, is_mig_correct
+
 def get_new_sample_ids_proba_weighted(
         all_edges,
         solution_graph,
@@ -221,7 +268,7 @@ def get_new_sample_ids_proba_weighted(
         return [], []
     
     # sample using the scaled migration prediction probability as weight
-    # the more likely it is an edge is incorrect, the less likely we are to sample it
+    # the more likely it is an edge is incorrect, the more likely we are to sample it
     unsampled_edges['sample_weight'] = 1 - unsampled_edges.scaled_mig_predict_proba
     # scaled mig predict, should be no zero weights
     assert len(unsampled_edges[unsampled_edges.sample_weight == 0]) == 0, 'Some unsampled edges have zero weight!'
@@ -306,7 +353,7 @@ def train_and_predict_migrations(all_edges, n_estimators=250, max_depth=10, k=0.
     columns_of_interest = [
         'distance',
         'chosen_neighbour_area_prop',
-        'chosen_neighbour_rank',
+        # 'chosen_neighbour_rank',
         'oracle_is_correct'
     ]
     all_sampled = all_edges[all_edges.sampled == 1][columns_of_interest]
@@ -331,7 +378,33 @@ def scaled_prob_weighted_cost(row):
     """Designed to use scaled probabilities closer to 0.5 as model tends to be too confident."""
     return row.distance * (1 - row.scaled_mig_predict_proba)
 
+def update_division_costs(all_edges):
+    """Update division cost based on learned migration cost.
+    
+    We want to keep division cost proportional to the original costs.
+    We therefore scale the new closest child's migration cost by
+    (old div cost/old closest child distance). This should keep
+    div costs roughly proportional without needing to compute a new
+    "interchild distance".
+    """
+    div_mask = all_edges.u == -3
+    div_edges = all_edges[div_mask]
+    new_costs = []
+    for row in div_edges.itertuples():
+        dividing_v = row.v
+        children = all_edges[(all_edges.u == dividing_v) & (all_edges.v >= 0)]
+        original_closest_distance = children.distance.min()
+        original_div_cost = row.cost
+        scale_factor = original_div_cost / original_closest_distance
+        new_closest_distance = children.learned_migration_cost.min()
+        new_div_cost = new_closest_distance * scale_factor
+        new_costs.append(new_div_cost)
+    all_edges.loc[div_edges.index, 'learned_migration_cost'] = new_costs
+    
+
 def assign_new_costs(all_edges):
     all_edges['learned_migration_cost'] = -1
     edges_with_pred = all_edges[all_edges.scaled_mig_predict_proba >= 0]
     all_edges.loc[edges_with_pred.index, 'learned_migration_cost'] = edges_with_pred.apply(scaled_prob_weighted_cost, axis=1)
+    # we need to update the division costs as well
+    # update_division_costs(all_edges)
