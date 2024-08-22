@@ -10,7 +10,8 @@ def ds_summary_to_configs(
         div_constraint=True,
         penalize_flow=False,
         merge_capacity=2,
-        flow_penalty=0
+        flow_penalty=0,
+        allow_merges=True
     ):
     """Convert dataset summary to Traxperiment configs.
 
@@ -42,11 +43,12 @@ def ds_summary_to_configs(
         exp_config = get_config_for_row(
             row,
             out_root,
-            appearance_cheat,
-            div_constraint,
-            merge_capacity,
-            penalize_flow,
-            flow_penalty
+            appearance_cheat=appearance_cheat,
+            div_constraint=div_constraint,
+            merge_capacity=merge_capacity,
+            penalize_flow=penalize_flow,
+            flow_penalty=flow_penalty,
+            allow_merges=allow_merges
         )
         configs.append(exp_config)
 
@@ -59,7 +61,8 @@ def get_config_for_row(
         div_constraint=True,
         penalize_flow=False,
         merge_capacity=2,
-        flow_penalty=0
+        flow_penalty=0,
+        allow_merges=True
     ):
     frame_shape = eval(row['im_shape'])
     data_config = TraxData(
@@ -81,7 +84,8 @@ def get_config_for_row(
         div_constraint=div_constraint,
         merge_capacity=merge_capacity,
         penalize_flow=penalize_flow,
-        flow_penalty=flow_penalty
+        flow_penalty=flow_penalty,
+        allow_merges=allow_merges
     )
     exp_config = Traxperiment(
         data_config=data_config,
