@@ -100,11 +100,11 @@ def get_baseline_accuracy(all_edges, ft_names):
     return sol_accuracy, model_accuracy
 
 if __name__ == '__main__':
-    root_pth = '/home/ddon0001/PhD/experiments/misc/no_merges/'
+    root_pth = '/home/ddon0001/PhD/experiments/misc/no_merges_small_k/'
     ds_summary_path = os.path.join(root_pth, 'summary.csv')
     ds_info = pd.read_csv(ds_summary_path)[['ds_name', 'det_path']]
 
-    save_root = '/home/ddon0001/PhD/experiments/sampling_pred_no_merge/'
+    save_root = '/home/ddon0001/PhD/experiments/sampling_pred_no_merge_small_k/'
 
     ds_names = []
     sol_accuracies = []

@@ -11,7 +11,8 @@ def ds_summary_to_configs(
         penalize_flow=False,
         merge_capacity=2,
         flow_penalty=0,
-        allow_merges=True
+        allow_merges=True,
+        k_neighbours=10
     ):
     """Convert dataset summary to Traxperiment configs.
 
@@ -48,7 +49,8 @@ def ds_summary_to_configs(
             merge_capacity=merge_capacity,
             penalize_flow=penalize_flow,
             flow_penalty=flow_penalty,
-            allow_merges=allow_merges
+            allow_merges=allow_merges,
+            k_neighbours=k_neighbours
         )
         configs.append(exp_config)
 
@@ -62,7 +64,8 @@ def get_config_for_row(
         penalize_flow=False,
         merge_capacity=2,
         flow_penalty=0,
-        allow_merges=True
+        allow_merges=True,
+        k_neighbours=10
     ):
     frame_shape = eval(row['im_shape'])
     data_config = TraxData(
@@ -78,7 +81,7 @@ def get_config_for_row(
         ground_truth_path=row['tra_gt_path'],
         value_key='label'
     )
-    instance_config = TraxInstance()
+    instance_config = TraxInstance(k=k_neighbours)
     tracktour_config = TraxTour(
         appearance_cheat=appearance_cheat,
         div_constraint=div_constraint,

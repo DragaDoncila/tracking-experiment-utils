@@ -23,6 +23,7 @@ from tracktour import get_im_centers, load_tiff_frames
 
 
 IM_DIR_GLOB = "[0-9][0-9]/"
+ERR_SEG_SUFFIX = "_ERR_SEG/"
 ST_SEG_SUFFIX = "_ST/SEG/"
 GT_TRA_SUFFIX = "_GT/TRA/"
 
@@ -36,7 +37,7 @@ def get_immediate_subdirectories(a_dir):
             if os.path.isdir(os.path.join(a_dir, name))]
 
 
-def generate_ctc_summary(root_dir, ds_summary_path, use_gt=False):
+def generate_ctc_summary(root_dir, ds_summary_path, use_gt=False, use_err_seg=False):
     """Write summary info of ctc datasets in root_dir to ds_summary_path.
 
     Parameters
@@ -47,6 +48,8 @@ def generate_ctc_summary(root_dir, ds_summary_path, use_gt=False):
         path to write summary csv
     use_gt : bool, optional
         whether to just use the ground truth images for detections
+    use_err_seg : bool, optional
+        whether to use the error segmentation for detections
 
     Returns
     -------
@@ -71,6 +74,11 @@ def generate_ctc_summary(root_dir, ds_summary_path, use_gt=False):
                 raise ValueError(f"Ground truth path not found: {gt_path}")
             if use_gt:
                 in_seg_path = gt_path
+            elif use_err_seg:
+                in_seg_path = os.path.join(root_dir, ds_name, f'{seq}{ERR_SEG_SUFFIX}')
+                if not os.path.exists(in_seg_path):
+                    warnings.warn(f'No error segmentation for dataset {ds_name}_{seq}. Skipping...')
+                    continue
             else:
                 in_seg_path = os.path.join(root_dir, ds_name, f'{seq}{ST_SEG_SUFFIX}')
                 if not os.path.exists(in_seg_path):
