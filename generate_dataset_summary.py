@@ -87,6 +87,7 @@ def generate_ctc_summary(root_dir, ds_summary_path, use_gt=False, use_err_seg=Fa
             out_det_path = os.path.join(in_seg_path, DET_CSV_NAME)
 
             # load ims get shape and number of frames
+            # TODO: should not be loading these unless we need to extract detections
             name = f'{ds_name}_{seq}'
             ims = load_tiff_frames(seq_pth)
             im_shape = ims[0].shape
